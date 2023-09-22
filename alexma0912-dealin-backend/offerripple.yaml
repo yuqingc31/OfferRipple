@@ -1,0 +1,194 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: offerripple-deployment
+  namespace: $ENV
+  labels:
+    app: offerripple
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: offerripple
+  template:
+    metadata:
+      labels:
+        app: offerripple
+    spec:
+      imagePullSecrets:
+        - name: my-registry-key
+      containers:
+        - name: offerripple
+          image: $ECR_REPO_SERVER/$ECR_REPO_NAME:$IMAGE_VERSION
+          #image: 044530424430.dkr.ecr.ap-southeast-2.amazonaws.com/dealin:1.0.0
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            httpGet:
+              path: /api/v1/health_check
+              port: 8080
+          livenessProbe:
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            httpGet:
+              path: /api/v1/health_check
+              port: 8080
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          env:
+            - name: CONNECTION_STRING
+              value: '${CONNECTION_STRING}'
+            - name: JWT_KEY
+              value: '${JWT_KEY}'
+            - name: NODE_ENV
+              value: '${NODE_ENV}'
+            - name: PORT
+              value: '${PORT}'
+            - name: API_PREFIX
+              value: '${API_PREFIX}'
+            - name: M3_REGION
+              value: '${M3_REGION}'
+            - name: M3_BUCKET_NAME
+              value: '${M3_BUCKET_NAME}'
+            - name: M3_ACCESS_KEY_ID
+              value: '${M3_ACCESS_KEY_ID}'
+            - name: M3_SECRET_ACCESS_KEY
+              value: '${M3_SECRET_ACCESS_KEY}'
+            - name: M3_SAVE_PATH
+              value: '${M3_SAVE_PATH}'
+            - name: GOOGLE_MAP_API
+              value: '${GOOGLE_MAP_API}'
+            - name: 'STRIPE_KEY'
+              value: '${STRIPE_KEY}'
+            - name: 'STRIPE_ENDPOINT_SECRET'
+              value: '${STRIPE_ENDPOINT_SECRET}'
+            - name: 'CLIENT_URL'
+              value: '${CLIENT_URL}'
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: offerripple-service
+  namespace: $ENV
+  labels:
+    app: offerripple
+  annotations:
+    alb.ingress.kubernetes.io/healthcheck-path: /api/v1/health_check
+spec:
+  type: ClusterIP
+  selector:
+    app: offerripple
+  ports:
+    - name: offerripple-service
+      protocol: TCP
+      port: 80
+      targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: offerripple-ingress-target-type-ip
+  namespace: $ENV
+  annotations:
+    # Load Balancer Name
+    alb.ingress.kubernetes.io/load-balancer-name: offerripple-ip-ingress
+    # Target Type: IP
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    # Health Check Settings
+    alb.ingress.kubernetes.io/healthcheck-protocol: HTTP
+    alb.ingress.kubernetes.io/healthcheck-port: '8080'
+    #Important Note:  Need to add health check path annotations in service level if we are planning to use multiple targets in a load balancer
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: '15'
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: '5'
+    alb.ingress.kubernetes.io/success-codes: '200'
+    alb.ingress.kubernetes.io/healthy-threshold-count: '2'
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: '2'
+    ## SSL Settings
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}, {"HTTP":80}]'
+    #alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:180789647333:certificate/d86de939-8ffd-410f-adce-0ce1f5be6e0d
+    # SSL Redirect Setting
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    # External DNS - For creating a Record Set in Route53
+    external-dns.alpha.kubernetes.io/hostname: $DNS
+    # Ingress group setting
+    alb.ingress.kubernetes.io/group.name: dealin.offerripple
+    alb.ingress.kubernetes.io/group.order: '${INGRESS_ORDER}'
+    #alb.ingress.kubernetes.io/subnets:subnet-0bec1c4e0245fd0f0, subnet-0421b42c6c9b2f695
+spec:
+  ingressClassName: alb # Ingress Class
+  # defaultBackend:
+  #   service:
+  #     name: offerripple-service
+  #     port:
+  #       number: 80
+  tls:
+    - hosts:
+        - $DNS
+  rules:
+    - host: $DNS
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: offerripple-service
+                port:
+                  number: 80
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: offerripple-pdb
+  namespace: $ENV
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: offerripple
+---
+apiVersion: autoscaling/v1
+kind: HorizontalPodAutoscaler
+metadata:
+  name: offerripple-hpa
+  namespace: $ENV
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: offerripple-deployment
+  minReplicas: $MIN_REPLICAS
+  maxReplicas: $MAX_REPLICAS
+  targetCPUUtilizationPercentage: 70
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: offerripple-vpa
+  namespace: $ENV
+spec:
+  targetRef:
+    apiVersion: 'apps/v1'
+    kind: Deployment
+    name: offerripple-deployment
+  updatePolicy:
+    updateMode: 'Auto'
+  resourcePolicy:
+    containerPolicies:
+      - containerName: 'offerripple'
+        minAllowed:
+          cpu: '100m'
+          memory: '128Mi'
+        maxAllowed:
+          cpu: '500m'
+          memory: '512Mi'

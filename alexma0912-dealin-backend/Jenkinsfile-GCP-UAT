@@ -1,0 +1,114 @@
+pipeline {
+  agent any
+  
+  environment {
+    ImgName     = 'dealin-backend-image-uat'
+    CntName     = 'dealin-backend-container-uat' 
+    DockerFile  = 'Dockerfile'
+    Tag         = 'latest'
+    ECR_REGISTRY = '023527796686.dkr.ecr.ap-southeast-2.amazonaws.com'
+    AWS_DEFAULT_REGION = 'ap-southeast-2' 
+    vaultCredentialId = 'vault-role'
+    vaultUrl= 'http://35.213.239.129:8200/'
+  }
+
+  options {
+    // Keep maximum 10 archievd artifacts
+    buildDiscarder(logRotator(numToKeepStr:'10', artifactNumToKeepStr:'10'))
+    // No simultaneous build
+    disableConcurrentBuilds()
+    durabilityHint('MAX_SURVIVABILITY') // PERFORMANCE_OPTIMIZED or SURVIVABLE_NONATOMIC
+    ansiColor('xterm')
+  }
+
+  stages {
+    stage('stop old service') {
+      steps {
+        echo 'Stop old service'
+        sh '''
+          if [ "$(docker ps -q -f name=${env.CntName})" ]; then
+            docker stop ${env.CntName} && docker rm ${env.CntName} && docker rmi ${env.ImgName}
+            sleep 5
+          fi
+          sleep 5
+        '''
+      }
+    }
+
+    stage('Build image') {
+      steps {
+        echo 'Building dealin-backend-uat image...'
+        sh 'docker build -t $ImgName -f $DockerFile .'
+      }
+    }
+
+    stage('Push Docker Image to ECR') {
+      steps {
+        withVault(configuration: [timeout: 60, vaultCredentialId:"${env.vaultCredentialId}" , vaultUrl: "${env.vaultUrl}"],
+                  vaultSecrets: [[path: 'secrets/creds/AWS_CRED', 
+                                  secretValues: [
+                                        [vaultKey: 'AWS_ACCESS_KEY_ID'],
+                                        [vaultKey: 'AWS_SECRET_ACCESS_KEY']]]])                                                                                                         
+            {
+            sh "aws ecr get-login-password --region ${env.AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${env.ECR_REGISTRY}"
+            sh "docker tag ${env.ImgName}:${env.Tag} ${env.ECR_REGISTRY}/${env.ImgName}:${env.Tag}"
+            sh "docker push ${env.ECR_REGISTRY}/${env.ImgName}:${env.Tag}"
+            }    
+          }
+      }
+
+      stage('delete old service') {
+        steps {
+                sshagent(credentials: ['dealin-backend-server']) {
+                    sh """
+                        ssh -o StrictHostKeyChecking=no q664773570@34.87.233.250 '
+                            if [ "\$(sudo docker ps -q -f name=${env.CntName})" ]; then 
+                                sudo docker stop ${env.CntName} && sudo docker rm ${env.CntName}; 
+                            fi
+                            if [ "\$(sudo docker images -qa)" ]; then
+                                sudo docker rmi \$(sudo docker images -qa)
+                            fi
+                        '
+                    """
+                }
+            }
+        }
+
+      stage('SSH-Connect to server and pull image') {
+        steps {
+        echo "Pull Image ..."
+        sshagent(credentials: ['dealin-backend-server']) {
+            withVault(configuration: [timeout: 60, vaultCredentialId: "${env.vaultCredentialId}", vaultUrl: "${env.vaultUrl}"],
+                vaultSecrets: [[path: 'secrets/creds/dealin', 
+                                secretValues: [
+                                    [vaultKey: 'CONNECTION_STRING'],
+                                    [vaultKey: 'JWT_KEY'],
+                                    [vaultKey: 'NODE_ENV'],
+                                    [vaultKey: 'PORT'],
+                                    [vaultKey: 'API_PREFIX'],
+                                    [vaultKey: 'M3_REGION'],
+                                    [vaultKey: 'M3_BUCKET_NAME'],
+                                    [vaultKey: 'M3_ACCESS_KEY_ID'],
+                                    [vaultKey: 'M3_SECRET_ACCESS_KEY'],
+                                    [vaultKey: 'GOOGLE_MAP_API'],
+                                    [vaultKey: 'STRIPE_KEY'],
+                                    [vaultKey: 'STRIPE_ENDPOINT_SECRET'],
+                                    [vaultKey: 'CLIENT_URL'],
+                                    [vaultKey: 'M3_SAVE_PATH'],                                       
+                                ]
+                ]]) {
+                sh "ssh -o StrictHostKeyChecking=no q664773570@34.87.233.250 \"aws ecr get-login-password --region ${env.AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${env.ECR_REGISTRY}\""
+                // sh "ssh -o StrictHostKeyChecking=no q664773570@34.87.233.250 \"sudo docker stop CntName && sudo docker rm CntName\""
+                // sh "ssh -o StrictHostKeyChecking=no q664773570@34.87.233.250 \"sudo docker images -qa |xargs sudo docker rmi\""
+                sh "ssh -o StrictHostKeyChecking=no q664773570@34.87.233.250 \"docker pull ${env.ECR_REGISTRY}/${env.ImgName}:${env.Tag}\""
+                sh "ssh -o StrictHostKeyChecking=no q664773570@34.87.233.250 \"docker run -d -p 8081:8080 -e CONNECTION_STRING=${env.CONNECTION_STRING} -e JWT_KEY=${env.JWT_KEY} -e NODE_ENV=${env.NODE_ENV} -e PORT=${env.PORT} -e API_PREFIX=${env.API_PREFIX} -e M3_REGION=${env.M3_REGION} -e M3_BUCKET_NAME=${env.M3_BUCKET_NAME} -e M3_ACCESS_KEY_ID=${env.M3_ACCESS_KEY_ID} -e M3_SECRET_ACCESS_KEY=${env.M3_SECRET_ACCESS_KEY} -e GOOGLE_MAP_API=${env.GOOGLE_MAP_API} --restart=always --name ${env.CntName} ${env.ECR_REGISTRY}/${env.ImgName}\""
+              }
+            }
+          }
+        }      
+  }
+}
+
+    
+
+    

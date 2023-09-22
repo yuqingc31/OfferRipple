@@ -1,0 +1,56 @@
+{
+  "parser": "@typescript-eslint/parser",
+  "parserOptions": {
+      "ecmaVersion": 12,
+      "sourceType": "module",
+      "project": "./tsconfig.json"
+  },
+  "plugins": [
+      "@typescript-eslint",
+      "no-secrets"
+  ],
+  "extends": [
+      "eslint:recommended",
+      "plugin:@typescript-eslint/recommended"
+  ],
+
+  "rules": {
+      "@typescript-eslint/no-var-requires": "off",
+      "no-secrets/no-secrets": [
+          "error",
+          {
+              "ignoreIdentifiers": [
+                  "RANDOM_CHAR",
+                  "DEFAULT_IMG_URL",
+                  "DEFAULT_MONGODB_URL",
+                  "DEFAULT_FE_URL",
+                  "DEFAULT_TANANT_CONNECTION",
+                  "DEFAULT_DOMAIN_CONNECTION"
+              ]
+          }
+      ],
+      "import/extensions": [
+          "off",
+          "ignorePackages",
+          {
+              "js": "never",
+              "jsx": "never",
+              "ts": "never",
+              "tsx": "never"
+          }
+      ],
+      "import/no-extraneous-dependencies": "off",
+      "@typescript-eslint/no-unused-vars": "error",
+      // to enforce using type for object type definitions, can be type or interface
+      "@typescript-eslint/consistent-type-definitions": [
+          "error",
+          "type"
+      ]
+  },
+
+  "env": {
+      "browser": true,
+      "es2021": true,
+      "node": true
+  }
+}

@@ -1,0 +1,337 @@
+#!/usr/bin/env groovy
+def gv
+pipeline {
+    agent {
+        label "Kubernetes"
+    }
+    parameters {
+        booleanParam(name:'DeleteNodeApp', defaultValue:false, description: 'Select when you want to delete node app from eks cluster!')
+    }
+
+    environment {
+        AWS_CREDS = "aws_credentials"
+        AWS_DEFAULT_REGION = "ap-southeast-2"
+        AWS_ACCOUNT_ID = "023527796686"  
+        ECR_REPO_SERVER = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+        ECR_REPO_NAME = "offerripple-cluster-eks-ecr"
+        CLUSTER_NAME = "offerripple-cluster"
+        vaultCredentialId = 'vault-role'
+        vaultUrl= 'http://35.213.239.129:8200/'
+        
+        UAT_ENV = "offerripple-uat"
+        UAT_DNS = "uat-api.offerripple.com"
+        PRO_ENV = "offerripple-pro"
+        PRO_DNS = "api.offerripple.com"
+
+        UAT_INGRESS_ORDER ="10"
+        PRO_INGRESS_ORDER ="5"
+
+        UAT_MIN_REPLICAS = 1
+        UAT_MAX_REPLICAS = 3
+
+        PRO_MIN_REPLICAS = 2
+        PRO_MAX_REPLICAS = 5
+
+        NAMESPACE= "sonarqube"
+        HELM_CHART = "sonarqube-release"
+
+        SONARQUBE_SCANNER="sonarqubescanner"
+        SONARQUBE_SERVER="sonarqube"
+        PROJECT_KEY="offerripple-backend"
+        
+        // environment from developer team
+        CLIENT_URL_UAT="https://uat.offerripple.com"
+        CLIENT_URL_PRO="https://offerripple.com"
+    }
+
+    stages {
+        stage("Init") {
+            steps{
+               script{
+                    ansiColor('vga'){
+                        gv=load "script.groovy"
+                    }
+               }
+            }
+        }
+        stage('Check out source code from Bitbucket') {
+            steps {                
+                ansiColor('vga'){
+                    echo "check out source code from Bitbucket"   
+                    checkout scm         
+                }                     
+            }
+        }
+        stage('Testing') {
+            steps {        
+                ansiColor('vga'){
+                    echo 'Running Unit Tests...'
+                    sh "npm install"
+                    sh "npm run test"                
+                }                                  
+            }
+        }
+        // stage("Sonarqube Ananlysis") {
+        //     when {
+        //         expression {                  
+        //             BRANCH_NAME == "develop"
+        //         }
+        //     }
+        //     steps {
+        //         script{
+        //             def scannerHome = tool "${SONARQUBE_SCANNER}"
+        //             withSonarQubeEnv("${SONARQUBE_SERVER}") {
+        //                 sh """
+        //                     ${scannerHome}/bin/sonar-scanner \
+        //                     -Dsonar.projectKey=${PROJECT_KEY}\
+        //                     -Dsonar.sources=src \
+        //                 """
+        //             }
+
+        //         }
+        //     }
+        // }
+        // stage("Quality Gate") {
+        //     when {
+        //         expression {                  
+        //             BRANCH_NAME == "develop"
+        //         }
+        //     }
+        //     steps {
+        //         timeout(time: 1, unit: 'HOURS') {
+        //             waitForQualityGate abortPipeline: true
+        //         }
+        //     }
+        // }
+        stage('Increment app version') {
+             when {
+                expression{ return !params.DeleteNodeApp}
+                expression {                  
+                    BRANCH_NAME == "develop"
+                }
+            }
+            steps {      
+                script{
+                    ansiColor('vga'){
+                        echo "Increment version"
+                        // update application version in the package.json file with the minor
+                        sh " npm --no-git-tag-version version minor "
+                        // read the updated version from the package.json file
+                        def packageJson= readJSON file:'package.json'
+                        def version = packageJson.version
+                        //  set the new version as part of the image_version
+                        env.IMAGE_VERSION = "$version"                  
+                   }    
+                }                         
+            }
+        }
+        stage('Build image') {
+            when {
+                expression{ return !params.DeleteNodeApp}
+                expression {                  
+                   BRANCH_NAME == "develop"
+                }
+            }
+            steps {                
+                script {
+                    echo "build docker image" 
+                    gv.buildDockerImage(env.ECR_REPO_NAME, env.IMAGE_VERSION)
+                } 
+            }
+        }
+        stage('Push image to ECR') {
+            when {
+                expression{ return !params.DeleteNodeApp}
+                expression {
+                     BRANCH_NAME == "develop"
+                }
+            }
+            steps {                
+                script{
+                    echo "Push image into ECR"
+                    gv.pushImageToECR(env.ECR_REPO_NAME, env.IMAGE_VERSION)
+                }                 
+            }
+        }
+        stage ('Deploy to UAT'){
+            environment {
+                 ENV = "${env.UAT_ENV}"
+                 DNS = "${env.UAT_DNS}"
+                 INGRESS_ORDER = "${env.UAT_INGRESS_ORDER}"
+                 MIN_REPLICAS= "${env.UAT_MIN_REPLICAS}" 
+                 MAX_REPLICAS="${env.UAT_MAX_REPLICAS}"  
+                 CLIENT_URL="${env.CLIENT_URL_UAT}"
+            }
+            when {
+                expression{ return !params.DeleteNodeApp}
+                expression {
+                     BRANCH_NAME == "develop"
+                }
+            }
+            steps {
+                script{
+                    echo "Deploy to UAT Environment!!!"
+                    gv.deployToEKS()
+                }               
+            }
+            post {
+                always {
+                    script{
+                        echo 'Clear Up UAT Docker Image...'
+                        gv.clearUpDockerImage(env.ECR_REPO_NAME, env.IMAGE_VERSION)
+                    }
+                }
+                success {
+                    echo 'Deploy to EKS UAT environment successfully!'
+                }
+                failure {
+                        echo 'The deploy stage failed.'
+                        echo 'Roll back to last deployment.'
+                }
+            }
+        }
+        stage ('Commit updated app version UAT'){
+            when {
+                expression{ return !params.DeleteNodeApp}
+                expression {
+                     BRANCH_NAME == "develop"  
+                }
+            }
+            steps{
+                script{
+                    gv.commitVersionUpdate()
+                }
+            }
+        }
+         stage ('Delete from UAT'){
+            environment {
+                ENV = "${env.UAT_ENV}"
+                DNS = "${env.UAT_DNS}"
+                INGRESS_ORDER = "${env.UAT_INGRESS_ORDER}"
+                MIN_REPLICAS= "${env.UAT_MIN_REPLICAS}" 
+                MAX_REPLICAS="${env.UAT_MAX_REPLICAS}"  
+                CLIENT_URL="${env.CLIENT_URL_UAT}"
+            }
+            when {
+                expression{ return params.DeleteNodeApp}
+                expression {
+                     BRANCH_NAME == "develop"   
+                }
+            }
+            steps {
+                script{
+                    echo "Delete to UAT Environment!!!"
+                    // update application version in the package.json file with the minor
+                    sh " npm --no-git-tag-version version minor "
+                    // read the updated version from the package.json file
+                    def packageJson= readJSON file:'package.json'
+                    def version = packageJson.version
+                    //  set the new version as part of the image_version
+                    env.IMAGE_VERSION = "$version"  
+                    gv.deleteFromCluster()
+                }               
+            }
+            post {
+                success {
+                    echo 'Delete node app from EKS UAT environment successfully!'
+                }
+                failure {
+                        echo 'The delete stage failed.'
+                }
+            }
+        }
+        stage('Get image version for Pro') {
+             when {
+                expression{ return !params.DeleteNodeApp}
+                expression {                  
+                   BRANCH_NAME == "main"
+                }
+            }
+            steps {      
+                script{
+                    ansiColor('vga'){
+                        echo "Get image version"
+                        // read the updated version from the package.json file
+                        def packageJson= readJSON file:'package.json'
+                        def version = packageJson.version
+                        //  set the new version as part of the image_version
+                        env.IMAGE_VERSION = "$version" 
+                        echo env.IMAGE_VERSION                 
+                   }    
+                }                         
+            }
+        }
+        stage("Deploy to Pro"){
+             environment {
+                 ENV = "${env.PRO_ENV}"
+                 DNS = "${env.PRO_DNS}"
+                 INGRESS_ORDER ="${env.PRO_INGRESS_ORDER}"
+                 MIN_REPLICAS= "${env.PRO_MIN_REPLICAS}" 
+                 MAX_REPLICAS="${env.PRO_MAX_REPLICAS}"  
+                 CLIENT_URL="${env.CLIENT_URL_PRO}"
+            }
+            when {
+                expression{ return !params.DeleteNodeApp}
+                expression {
+                    BRANCH_NAME == "main"
+                }
+            }
+            steps{
+                script {
+                    echo "Deploy to Production Environment!!!"
+                    gv.deployToEKS() 
+                }
+            }
+            post {
+                success {
+                    echo 'Deploy to EKS Production Environment successfully!'
+                }
+                failure {
+                    echo 'The deploy to EKS Production Environment failed.'
+                    echo 'Roll back to last deployment.'     
+                }
+            }
+        }
+        stage("Delete from Pro"){
+             environment {
+                ENV = "${env.PRO_ENV}"
+                DNS = "${env.PRO_DNS}"
+                INGRESS_ORDER ="${env.PRO_INGRESS_ORDER}"
+                MIN_REPLICAS= "${env.PRO_MIN_REPLICAS}" 
+                MAX_REPLICAS="${env.PRO_MAX_REPLICAS}"  
+                CLIENT_URL="${env.CLIENT_URL_PRO}"
+            }
+            when {
+                expression{ return params.DeleteNodeApp}
+                expression {
+                    BRANCH_NAME == "main"
+                }
+            }
+            steps{
+                script {
+                    echo "Delete from Production Environment!!!"
+                    // read the updated version from the package.json file
+                    def packageJson= readJSON file:'package.json'
+                    def version = packageJson.version
+                    //  set the new version as part of the image_version
+                    env.IMAGE_VERSION = "$version" 
+                    echo env.IMAGE_VERSION   
+                    gv.deleteFromCluster() 
+                }
+            }
+            post {
+                success {
+                    echo 'Delete to EKS Production Environment successfully!'
+                }
+                failure {
+                    echo 'The delete node app from EKS Production Environment failed.'  
+                }
+            }
+        }
+    }
+     post {
+        always {
+            cleanWs()
+        }
+    }
+}

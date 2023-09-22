@@ -1,0 +1,6 @@
+projectKey=offerripple-frontend
+serverUrl=https://sonarqube.offerripple.com
+serverVersion=10.1.0.73491
+dashboardUrl=https://sonarqube.offerripple.com/dashboard?id=offerripple-frontend
+ceTaskId=AYonhMdWNQ5IOe-2RmP5
+ceTaskUrl=https://sonarqube.offerripple.com/api/ce/task?id=AYonhMdWNQ5IOe-2RmP5
